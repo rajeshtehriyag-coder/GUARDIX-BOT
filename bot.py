@@ -2768,7 +2768,7 @@ async def main():
         log.warning("OWNER_ID not set - owner commands disabled")
     try:
         await db.groups.create_index("chat_id")
-        await db.members.create_index([("chat_id", ASCENDING), ("user_id", ASCENDING)])
+        await db.members.create_index([("chat_id", ASCENDING), ("user_id", ASCENDING)], name="chat_user_idx", unique=False)
         await db.members.create_index("user_id")
         await db.users.create_index("user_id", unique=True)
         await db.warns.create_index([("chat_id", ASCENDING), ("user_id", ASCENDING)])
