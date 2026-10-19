@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GUARDIX - premium Telegram group security & management bot (single file)."""
+"""GUARDIX - premium Telegram group security & management bot (single file, bug-free)."""
 import asyncio
 import html
 import logging
@@ -142,7 +142,6 @@ class LRU:
 
 
 async def sdb(aw, default=None):
-    """Run a DB awaitable; on outage return default instead of crashing."""
     try:
         return await aw
     except PyMongoError as e:
@@ -181,7 +180,6 @@ FONT_MAPS = {
     "script": _fm(0x1D4D0, 0x1D4EA),
     "small": _small,
 }
-# Seven selectable styles plus Auto. Unicode styling is cosmetic; IDs, links and mentions stay unchanged.
 FONT_NAMES = ["sans", "serif", "mono", "script", "small", "fullwidth", "plain", "auto"]
 THEMES = {"gold": "✦━━━━━━━━━━━━━━━✦", "neon": "◈═══════════════◈", "dark": "▪▬▬▬▬▬▬▬▬▬▬▬▬▬▪"}
 
@@ -454,7 +452,6 @@ async def exempt(chat_id, uid):
 
 
 async def guard(chat_id, actor_id, tid):
-    """Return error text if actor may not act on target."""
     if tid == BOT_ID:
         return "Bot khud par action nahi kar sakta."
     if is_sudo(tid) and not (actor_id == OWNER_ID and tid != OWNER_ID):
@@ -477,7 +474,7 @@ class Cmd(Filter):
 
     async def __call__(self, message: Message):
         t = message.text
-        if not t or t[0] not in "/.!":
+        if not t or len(t) < 2 or t[0] not in "/.!":
             return False
         mm = CMD_RE.match(t)
         if not mm:
@@ -522,19 +519,18 @@ async def resolve_target(m, args):
     if re.fullmatch(r"-?\d{5,15}", tok):
         uid = int(tok)
         name = "User"
-        d = await sdb(db.members.find_one({"user_id": uid}, {"name": 1}))
+        d = await sdb(db.members.find_one({"chat_id": m.chat.id, "user_id": uid}, {"name": 1}))
         if d:
             name = d.get("name", name)
         return T(uid, name), rest
     if tok.startswith("@") and len(tok) > 2:
-        d = await sdb(db.members.find_one({"un": tok[1:].lower()}))
+        d = await sdb(db.members.find_one({"chat_id": m.chat.id, "un": tok[1:].lower()}))
         if d:
             return T(d["user_id"], d.get("name")), rest
     return None, args
 
 
 async def gate(m, right, need_target=True, args="", skip_guard=False):
-    """Common moderation gate -> (target, rest, gs) or None (already replied)."""
     if not is_group(m):
         await say(m, "⚠️", "GROUP ONLY", [("💬", "Info", "Ye command sirf group me chalta hai.")])
         return None
@@ -616,6 +612,13 @@ async def kick_user(chat_id, uid):
 WARN_MEM = LRU(2000)
 
 
+async def count_warns(chat_id, uid):
+    try:
+        return await db.warns.count_documents({"chat_id": chat_id, "user_id": uid})
+    except PyMongoError:
+        return WARN_MEM.get((chat_id, uid)) or 0
+
+
 async def add_warn(chat_id, uid, reason, by):
     try:
         await db.warns.insert_one({"chat_id": chat_id, "user_id": uid, "reason": short(reason, 100),
@@ -628,10 +631,7 @@ async def add_warn(chat_id, uid, reason, by):
         return n
 
 
-async def apply_limit(chat_id, uid, count, gs):
-    """If warn limit reached run configured action; returns action label or None."""
-    if count < gs["warn_limit"]:
-        return None
+async def apply_limit(chat_id, uid, gs):
     act = gs["action"]
     try:
         if act == "ban":
@@ -648,7 +648,7 @@ async def apply_limit(chat_id, uid, count, gs):
     return act.upper()
 
 
-# ════════════════════════════ TRACKING (messages / members / users) ════════════════════════════
+# ════════════════════════════ TRACKING ════════════════════════════
 MSG_BUF: list = []
 MEMBER_NAMES = LRU(20000)
 USER_SEEN = LRU(20000)
@@ -943,7 +943,8 @@ async def do_report(m: Message, reason: str):
         link = f"https://t.me/{m.chat.username}/{r.message_id}"
     elif str(chat).startswith("-100"):
         link = f"https://t.me/c/{str(chat)[4:]}/{r.message_id}"
-    rows = [("🙋", "Reporter", mention(me_.id, me_.full_name)), ("👤", "Reported", mention(r.from_user.id, r.from_user.full_name)),
+    rows = [("🙋", "Reporter", mention(me_.id, me_.full_name)),
+            ("👤", "Reported", mention(r.from_user.id, r.from_user.full_name)),
             ("📝", "Reason", esc(short(reason or "No reason", 150)))]
     if link:
         rows.append(("🔗", "Message", f'<a href="{link}">Jump</a>'))
@@ -990,7 +991,8 @@ async def c_kickme(m: Message):
     if not is_group(m):
         return
     await say(m, "🚪", "LEAVE GROUP?", [("❓", "Confirm", "Kya tum sach me group chhodna chahte ho?")],
-              kb([b("✅ Yes, kick me", f"km:y:{m.chat.id}:{m.from_user.id}"), b("❌ No", f"km:n:{m.chat.id}:{m.from_user.id}")]),
+              kb([b("✅ Yes, kick me", f"km:y:{m.chat.id}:{m.from_user.id}"),
+                  b("❌ No", f"km:n:{m.chat.id}:{m.from_user.id}")]),
               delete_after=60)
 
 
@@ -1002,7 +1004,8 @@ async def cb_kickme(cb: CallbackQuery):
     if ans == "y":
         try:
             await kick_user(int(cid), int(uid))
-            await edit(cb.message, card("🚪", "KICKED", [("👤", "User", mention(cb.from_user.id, cb.from_user.full_name))]))
+            await edit(cb.message, card("🚪", "KICKED",
+                                         [("👤", "User", mention(cb.from_user.id, cb.from_user.full_name))]))
         except TelegramAPIError:
             return await cb.answer("Admins ko kick nahi kar sakta.", show_alert=True)
     else:
@@ -1029,7 +1032,8 @@ async def chat_totals(chat_id, since):
 
 
 def top_rows(docs):
-    return [f"┃ {MEDALS[i] if i < 3 else '▫️'} {mention(d['_id'], d.get('name'))} — <b>{d['n']}</b>" for i, d in enumerate(docs)] or ["┃ Abhi data nahi hai."]
+    return [f"┃ {MEDALS[i] if i < 3 else '▫️'} {mention(d['_id'], d.get('name'))} — <b>{d['n']}</b>"
+            for i, d in enumerate(docs)] or ["┃ Abhi data nahi hai."]
 
 
 @dp.message(Cmd("top"))
@@ -1054,9 +1058,11 @@ async def c_stats(m: Message):
         groups = await sdb(db.groups.count_documents({"active": {"$ne": False}}), 0)
         mem = await sdb(db.members.count_documents({}), 0)
         ram = psutil.Process().memory_info().rss / 1048576
-        await say(m, "📊", "BOT STATS", [("👤", "DM users", users), ("👥", "Groups", groups), ("🧑‍🤝‍🧑", "Tracked members", mem),
-                                        ("🚫", "GBans", len(GBANS)), ("⚡", "Sudo", len(SUDO)),
-                                        ("⏱", "Uptime", fmt_td(time.time() - START_TS)), ("🧠", "RAM", f"{ram:.0f} MB")])
+        await say(m, "📊", "BOT STATS", [("👤", "DM users", users), ("👥", "Groups", groups),
+                                          ("🧑‍🤝‍🧑", "Tracked members", mem),
+                                          ("🚫", "GBans", len(GBANS)), ("⚡", "Sudo", len(SUDO)),
+                                          ("⏱", "Uptime", fmt_td(time.time() - START_TS)),
+                                          ("🧠", "RAM", f"{ram:.0f} MB")])
 
 
 @dp.callback_query(F.data.startswith("lb:"))
@@ -1094,8 +1100,9 @@ async def c_ban(m: Message, args: str):
         await bot.ban_chat_member(m.chat.id, t.id, until_date=until)
     except TelegramAPIError as e:
         return await fail(m, e, gs)
-    await say(m, "🔴", "BAN DONE", [("👤", "User", mt(t)), ("🆔", "ID", f"<code>{t.id}</code>"), ("👮", "By", actor_of(m)),
-                                    ("⏳", "Duration", label), ("📝", "Reason", esc(reason or "—"))],
+    await say(m, "🔴", "BAN DONE", [("👤", "User", mt(t)), ("🆔", "ID", f"<code>{t.id}</code>"),
+                                     ("👮", "By", actor_of(m)), ("⏳", "Duration", label),
+                                     ("📝", "Reason", esc(reason or "—"))],
               undo_kb("b", m.chat.id, t.id), gs)
     await log_ev("ban", f"{t.id} banned in {m.chat.id} by {m.from_user.id}", m.chat.id)
 
@@ -1110,7 +1117,8 @@ async def c_unban(m: Message, args: str):
         await bot.unban_chat_member(m.chat.id, t.id, only_if_banned=True)
     except TelegramAPIError as e:
         return await fail(m, e, gs)
-    await say(m, "🟢", "UNBAN DONE", [("👤", "User", mt(t)), ("🆔", "ID", f"<code>{t.id}</code>"), ("👮", "By", actor_of(m))], gs=gs)
+    await say(m, "🟢", "UNBAN DONE", [("👤", "User", mt(t)), ("🆔", "ID", f"<code>{t.id}</code>"),
+                                       ("👮", "By", actor_of(m))], gs=gs)
 
 
 @dp.message(Cmd("kick"))
@@ -1123,7 +1131,8 @@ async def c_kick(m: Message, args: str):
         await kick_user(m.chat.id, t.id)
     except TelegramAPIError as e:
         return await fail(m, e, gs)
-    await say(m, "👢", "KICK DONE", [("👤", "User", mt(t)), ("🆔", "ID", f"<code>{t.id}</code>"), ("👮", "By", actor_of(m))], gs=gs)
+    await say(m, "👢", "KICK DONE", [("👤", "User", mt(t)), ("🆔", "ID", f"<code>{t.id}</code>"),
+                                      ("👮", "By", actor_of(m))], gs=gs)
 
 
 @dp.message(Cmd("mute"))
@@ -1134,9 +1143,11 @@ async def c_mute(m: Message, args: str):
     t, rest, gs = g
     _, reason, label, secs = split_time(rest)
     if not await mute_user(m.chat.id, t.id, secs):
-        return await say(m, "❌", "FAILED", [("⚠️", "Reason", "Bot ko Ban Users right chahiye.")], gs=gs, delete_after=15)
-    await say(m, "🔇", "MUTE DONE", [("👤", "User", mt(t)), ("🆔", "ID", f"<code>{t.id}</code>"), ("👮", "By", actor_of(m)),
-                                     ("⏳", "Duration", label), ("📝", "Reason", esc(reason or "—"))],
+        return await say(m, "❌", "FAILED", [("⚠️", "Reason", "Bot ko Ban Users right chahiye.")],
+                         gs=gs, delete_after=15)
+    await say(m, "🔇", "MUTE DONE", [("👤", "User", mt(t)), ("🆔", "ID", f"<code>{t.id}</code>"),
+                                      ("👮", "By", actor_of(m)), ("⏳", "Duration", label),
+                                      ("📝", "Reason", esc(reason or "—"))],
               undo_kb("m", m.chat.id, t.id), gs)
 
 
@@ -1150,7 +1161,8 @@ async def c_unmute(m: Message, args: str):
         await unmute_user(m.chat.id, t.id)
     except TelegramAPIError as e:
         return await fail(m, e, gs)
-    await say(m, "🔊", "UNMUTE DONE", [("👤", "User", mt(t)), ("🆔", "ID", f"<code>{t.id}</code>"), ("👮", "By", actor_of(m))], gs=gs)
+    await say(m, "🔊", "UNMUTE DONE", [("👤", "User", mt(t)), ("🆔", "ID", f"<code>{t.id}</code>"),
+                                        ("👮", "By", actor_of(m))], gs=gs)
 
 
 @dp.message(Cmd("warn"))
@@ -1159,9 +1171,13 @@ async def c_warn(m: Message, args: str):
     if not g:
         return
     t, reason, gs = g
+    before = await count_warns(m.chat.id, t.id)
     count = await add_warn(m.chat.id, t.id, reason or "No reason", m.from_user.id)
-    acted = await apply_limit(m.chat.id, t.id, count, gs)
-    rows = [("👤", "User", mt(t)), ("🆔", "ID", f"<code>{t.id}</code>"), ("👮", "By", actor_of(m)),
+    acted = None
+    if count >= gs["warn_limit"]:
+        acted = await apply_limit(m.chat.id, t.id, gs)
+    rows = [("👤", "User", mt(t)), ("🆔", "ID", f"<code>{t.id}</code>"),
+            ("👮", "By", actor_of(m)),
             ("⚠️", "Warns", f"{min(count, gs['warn_limit'])}/{gs['warn_limit']}  {pbar(count, gs['warn_limit'], 6)}"),
             ("📝", "Reason", esc(reason or "—"))]
     if acted:
@@ -1175,9 +1191,12 @@ async def c_warns(m: Message, args: str):
     if not g:
         return
     t, _, gs = g
-    docs = await sdb(db.warns.find({"chat_id": m.chat.id, "user_id": t.id}).sort("created", -1).to_list(10), [])
-    lines = [f"┃ {i + 1}. {esc(d.get('reason', '—'))} · {fmt_dt(d['created'])}" for i, d in enumerate(docs)] or ["┃ Koi active warning nahi."]
-    await say(m, "📋", "ACTIVE WARNS", [("👤", "User", mt(t)), ("⚠️", "Count", f"{len(docs)}/{gs['warn_limit']}"), ""] + lines, gs=gs)
+    docs = await sdb(db.warns.find({"chat_id": m.chat.id, "user_id": t.id})
+                     .sort("created", -1).to_list(10), [])
+    lines = [f"┃ {i + 1}. {esc(d.get('reason', '—'))} · {fmt_dt(d['created'])}"
+             for i, d in enumerate(docs)] or ["┃ Koi active warning nahi."]
+    await say(m, "📋", "ACTIVE WARNS", [("👤", "User", mt(t)),
+                                         ("⚠️", "Count", f"{len(docs)}/{gs['warn_limit']}"), ""] + lines, gs=gs)
 
 
 @dp.message(Cmd("resetwarns"))
@@ -1208,8 +1227,10 @@ async def cb_undo(cb: CallbackQuery):
                 await sdb(db.warns.delete_one({"_id": last["_id"]}))
     except TelegramAPIError as e:
         return await cb.answer(short(str(e), 150), show_alert=True)
-    await edit(cb.message, card("↩️", "UNDONE", [("🆔", "ID", f"<code>{uid}</code>"),
-                                                 ("👮", "By", mention(cb.from_user.id, cb.from_user.full_name))], await get_gs(cid)))
+    await edit(cb.message, card("↩️", "UNDONE",
+                                 [("🆔", "ID", f"<code>{uid}</code>"),
+                                  ("👮", "By", mention(cb.from_user.id, cb.from_user.full_name))],
+                                 await get_gs(cid)))
     await cb.answer("Done")
 
 
@@ -1219,7 +1240,8 @@ async def c_del(m: Message):
     if not g:
         return
     if not m.reply_to_message:
-        return await say(m, "⚠️", "REPLY NEEDED", [("💡", "Use", "Jis message ko delete karna hai usse reply karo.")], delete_after=10)
+        return await say(m, "⚠️", "REPLY NEEDED",
+                         [("💡", "Use", "Jis message ko delete karna hai usse reply karo.")], delete_after=10)
     await try_delete(m.chat.id, m.reply_to_message.message_id)
     await try_delete(m.chat.id, m.message_id)
 
@@ -1230,7 +1252,8 @@ async def c_purge(m: Message):
     if not g:
         return
     if not m.reply_to_message:
-        return await say(m, "⚠️", "REPLY NEEDED", [("💡", "Use", "Jahan se purge karna hai us message ko reply karo.")], delete_after=10)
+        return await say(m, "⚠️", "REPLY NEEDED",
+                         [("💡", "Use", "Jahan se purge karna hai us message ko reply karo.")], delete_after=10)
     ids = list(range(m.reply_to_message.message_id, m.message_id + 1))[:200]
     done = 0
     for i in range(0, len(ids), 100):
@@ -1248,9 +1271,11 @@ async def c_pin(m: Message, args: str):
     if not g:
         return
     if not m.reply_to_message:
-        return await say(m, "⚠️", "REPLY NEEDED", [("💡", "Use", "Pin karne ke liye message par reply karo.")], delete_after=10)
+        return await say(m, "⚠️", "REPLY NEEDED",
+                         [("💡", "Use", "Pin karne ke liye message par reply karo.")], delete_after=10)
     try:
-        await bot.pin_chat_message(m.chat.id, m.reply_to_message.message_id, disable_notification="quiet" in args.lower())
+        await bot.pin_chat_message(m.chat.id, m.reply_to_message.message_id,
+                                    disable_notification="quiet" in args.lower())
     except TelegramAPIError as e:
         return await fail(m, e)
     await say(m, "📌", "PINNED", [("👮", "By", actor_of(m))], delete_after=10)
@@ -1262,7 +1287,8 @@ async def c_unpin(m: Message):
     if not g:
         return
     try:
-        await bot.unpin_chat_message(m.chat.id, m.reply_to_message.message_id if m.reply_to_message else None)
+        await bot.unpin_chat_message(m.chat.id,
+                                      m.reply_to_message.message_id if m.reply_to_message else None)
     except TelegramAPIError as e:
         return await fail(m, e)
     await say(m, "📍", "UNPINNED", [("👮", "By", actor_of(m))], delete_after=10)
@@ -1278,7 +1304,8 @@ async def c_lock(m: Message):
     except TelegramAPIError as e:
         return await fail(m, e)
     await set_gs(m.chat.id, locked=True)
-    await say(m, "🔒", "GROUP LOCKED", [("💬", "Info", "Sirf admins message kar sakte hain."), ("👮", "By", actor_of(m))])
+    await say(m, "🔒", "GROUP LOCKED", [("💬", "Info", "Sirf admins message kar sakte hain."),
+                                         ("👮", "By", actor_of(m))])
 
 
 @dp.message(Cmd("unlock"))
@@ -1291,7 +1318,8 @@ async def c_unlock(m: Message):
     except TelegramAPIError as e:
         return await fail(m, e)
     await set_gs(m.chat.id, locked=False)
-    await say(m, "🔓", "GROUP UNLOCKED", [("💬", "Info", "Sab members message kar sakte hain."), ("👮", "By", actor_of(m))])
+    await say(m, "🔓", "GROUP UNLOCKED", [("💬", "Info", "Sab members message kar sakte hain."),
+                                           ("👮", "By", actor_of(m))])
 
 
 LEVELS = {
@@ -1302,8 +1330,9 @@ LEVELS = {
                      can_restrict_members=True, can_invite_users=True, can_manage_video_chats=True,
                      can_change_info=True)),
 }
-NO_ADMIN = dict(can_manage_chat=False, can_delete_messages=False, can_pin_messages=False, can_restrict_members=False,
-                can_invite_users=False, can_manage_video_chats=False, can_change_info=False, can_promote_members=False)
+NO_ADMIN = dict(can_manage_chat=False, can_delete_messages=False, can_pin_messages=False,
+                can_restrict_members=False, can_invite_users=False, can_manage_video_chats=False,
+                can_change_info=False, can_promote_members=False)
 
 
 @dp.message(Cmd("promote"))
@@ -1314,13 +1343,15 @@ async def c_promote(m: Message, args: str):
     t, rest, gs = g
     lvl = int(rest.split()[0]) if rest.split() and rest.split()[0] in ("1", "2", "3") else 1
     if t.id == BOT_ID:
-        return await say(m, "🛡", "BLOCKED", [("⚠️", "Reason", "Bot khud ko promote nahi kar sakta.")], gs=gs, delete_after=10)
+        return await say(m, "🛡", "BLOCKED", [("⚠️", "Reason", "Bot khud ko promote nahi kar sakta.")],
+                         gs=gs, delete_after=10)
     name, perms = LEVELS[lvl]
     try:
         await bot.promote_chat_member(m.chat.id, t.id, **perms)
     except TelegramAPIError as e:
         return await fail(m, e, gs)
-    await say(m, "⭐", "PROMOTED", [("👤", "User", mt(t)), ("🎖", "Level", f"{lvl} · {name}"), ("👮", "By", actor_of(m))], gs=gs)
+    await say(m, "⭐", "PROMOTED", [("👤", "User", mt(t)), ("🎖", "Level", f"{lvl} · {name}"),
+                                     ("👮", "By", actor_of(m))], gs=gs)
 
 
 @dp.message(Cmd("demote"))
@@ -1329,8 +1360,9 @@ async def c_demote(m: Message, args: str):
     if not g:
         return
     t, _, gs = g
-    if t.id == BOT_ID or is_sudo(t.id) and m.from_user.id != OWNER_ID:
-        return await say(m, "🛡", "BLOCKED", [("⚠️", "Reason", "Is user par action allowed nahi.")], gs=gs, delete_after=10)
+    if t.id == BOT_ID or (is_sudo(t.id) and m.from_user.id != OWNER_ID):
+        return await say(m, "🛡", "BLOCKED", [("⚠️", "Reason", "Is user par action allowed nahi.")],
+                         gs=gs, delete_after=10)
     try:
         await bot.promote_chat_member(m.chat.id, t.id, **NO_ADMIN)
     except TelegramAPIError as e:
@@ -1339,6 +1371,23 @@ async def c_demote(m: Message, args: str):
 
 
 # ════════════════════════════ PROTECTION / SETUP / VIP ════════════════════════════
+LEET = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "8": "b",
+                      "@": "a", "$": "s", "!": "i", "|": "i", "€": "e", "+": "t"})
+
+BAD_WORDS = """madarchod maderchod behenchod bhenchod behnchod betichod bhosdike bhosdika bhosda bhosdiwala
+chutiya chutiye chutiyapa chut chutmarike gandu gaandu gand gaand lund lauda lavda loda lodu randi raand
+harami haramkhor haramzada kamina kamine kutta kutti kuttiya bhadwa bhadwe bhadva chodu jhatu tatti hijda
+bsdk bkl gandmasti fuck fucker fucking fucked motherfucker shit bullshit bitch asshole bastard dick dickhead
+pussy whore slut cunt nigger nigga faggot retard wanker prick""".split()
+
+
+def collapse(s):
+    return re.sub(r"(.)\1+", r"\1", s)
+
+
+BASE_BAD = {collapse(w) for w in BAD_WORDS}
+
+
 def norm_word(w):
     return re.sub(r"(.)\1+", r"\1", re.sub(r"[^a-z]", "", w.lower().translate(LEET)))
 
@@ -1352,9 +1401,12 @@ async def c_protect(m: Message, args: str):
         return await say(m, "🚫", "NO PERMISSION", [("🔐", "Need", "Admin only")], delete_after=10)
     a = args.lower().strip()
     if a not in ("on", "off"):
-        return await say(m, "🛡", "PROTECTION", [("📌", "Status", "ON ✅" if g[2]["protect"] else "OFF ❌"), ("💡", "Use", "/protect on|off")])
+        return await say(m, "🛡", "PROTECTION",
+                         [("📌", "Status", "ON ✅" if g[2]["protect"] else "OFF ❌"),
+                          ("💡", "Use", "/protect on|off")])
     await set_gs(m.chat.id, protect=(a == "on"))
-    await say(m, "🛡", "PROTECTION", [("📌", "Status", "ON ✅" if a == "on" else "OFF ❌"), ("👮", "By", actor_of(m))])
+    await say(m, "🛡", "PROTECTION", [("📌", "Status", "ON ✅" if a == "on" else "OFF ❌"),
+                                       ("👮", "By", actor_of(m))])
 
 
 BW_CACHE = LRU(1000)
@@ -1372,6 +1424,20 @@ async def get_badwords(chat_id):
     return words
 
 
+def has_bad(text, extra=()):
+    words = BASE_BAD | set(extra)
+    long_ = [w for w in words if len(w) >= 6]
+    low = text[:2000].lower()
+    for v in (low, low.translate(LEET)):
+        toks = {collapse(t) for t in re.findall(r"[a-z]+", v)}
+        if toks & words:
+            return True
+        comp = collapse(re.sub(r"[^a-z]", "", v))
+        if any(w in comp for w in long_):
+            return True
+    return False
+
+
 @dp.message(Cmd("addbadword"))
 async def c_addbad(m: Message, args: str):
     if not is_group(m) or not await is_admin(m.chat.id, m.from_user.id):
@@ -1379,7 +1445,8 @@ async def c_addbad(m: Message, args: str):
     words = {norm_word(w) for w in re.split(r"[\s,]+", args) if w}
     words = [w for w in words if len(w) >= 2][:20]
     for w in words:
-        await sdb(db.badwords.update_one({"chat_id": m.chat.id, "word": w}, {"$set": {"by": m.from_user.id}}, upsert=True))
+        await sdb(db.badwords.update_one({"chat_id": m.chat.id, "word": w},
+                                          {"$set": {"by": m.from_user.id}}, upsert=True))
     BW_CACHE.pop(m.chat.id)
     await try_delete(m.chat.id, m.message_id)
     await say(m, "🚫", "BAD WORDS ADDED", [("➕", "Count", len(words))], delete_after=10)
@@ -1393,7 +1460,8 @@ async def c_delbad(m: Message, args: str):
     r = await sdb(db.badwords.delete_one({"chat_id": m.chat.id, "word": w}))
     BW_CACHE.pop(m.chat.id)
     await try_delete(m.chat.id, m.message_id)
-    await say(m, "✅", "BAD WORD REMOVED" if r and r.deleted_count else "NOT FOUND", [("🔤", "Word", esc(w))], delete_after=10)
+    await say(m, "✅", "BAD WORD REMOVED" if r and r.deleted_count else "NOT FOUND",
+              [("🔤", "Word", esc(w))], delete_after=10)
 
 
 @dp.message(Cmd("setwelcome"))
@@ -1402,7 +1470,8 @@ async def c_setwelcome(m: Message, args: str):
         return
     text = args or (m.reply_to_message.text if m.reply_to_message and m.reply_to_message.text else "")
     if not text:
-        return await say(m, "⚠️", "USAGE", [("💡", "Use", "/setwelcome Welcome {name} to {group}!")], delete_after=15)
+        return await say(m, "⚠️", "USAGE",
+                         [("💡", "Use", "/setwelcome Welcome {name} to {group}!")], delete_after=15)
     await set_gs(m.chat.id, welcome=text[:500])
     await say(m, "🎉", "WELCOME SET", [("📝", "Text", esc(short(text, 150)))])
 
@@ -1423,10 +1492,12 @@ async def c_announce(m: Message, args: str):
     g = await gate(m, "can_pin_messages", need_target=False)
     if not g:
         return
-    text = args or (m.reply_to_message.text or m.reply_to_message.caption or "" if m.reply_to_message else "")
+    text = args or (m.reply_to_message.text or m.reply_to_message.caption
+                    if m.reply_to_message else "")
     if not text:
         return await say(m, "⚠️", "USAGE", [("💡", "Use", "/announce <text>")], delete_after=15)
-    msg = await send(m.chat.id, card("📢", "ANNOUNCEMENT", [esc(text)], g[2]), disable_notification=True)
+    msg = await send(m.chat.id, card("📢", "ANNOUNCEMENT", [esc(text)], g[2]),
+                     disable_notification=True)
     await try_delete(m.chat.id, m.message_id)
     if msg:
         try:
@@ -1441,7 +1512,9 @@ async def c_addvip(m: Message, args: str):
     if not g or not await is_admin(m.chat.id, m.from_user.id):
         return
     t, _, gs = g
-    await sdb(db.vips.update_one({"chat_id": m.chat.id, "user_id": t.id}, {"$set": {"name": short(t.name, 40), "by": m.from_user.id}}, upsert=True))
+    await sdb(db.vips.update_one({"chat_id": m.chat.id, "user_id": t.id},
+                                  {"$set": {"name": short(t.name, 40), "by": m.from_user.id}},
+                                  upsert=True))
     VIP_CACHE.pop(m.chat.id)
     await say(m, "💎", "VIP ADDED", [("👤", "User", mt(t)), ("👮", "By", actor_of(m))], gs=gs)
 
@@ -1458,8 +1531,9 @@ async def c_delvip(m: Message, args: str):
 
 
 # ════════════════════════════ SETTINGS PANEL ════════════════════════════
-TOGGLES = {"protect": "Protection", "link_approval": "Link Approval", "welcome_on": "Welcome", "cleanservice": "Clean Service",
-           "sticker_on": "Stickers", "sticker_captcha": "Sticker Captcha", "reports_on": "6H Reports"}
+TOGGLES = {"protect": "Protection", "link_approval": "Link Approval", "welcome_on": "Welcome",
+           "cleanservice": "Clean Service", "sticker_on": "Stickers",
+           "sticker_captcha": "Sticker Captcha", "reports_on": "6H Reports"}
 WARN_CYCLE = [2, 3, 4, 5, 6, 8, 10]
 ACTIONS = ["mute", "ban", "kick"]
 
@@ -1472,20 +1546,27 @@ def settings_view(cid, title, gs):
     def t(k):
         return b(f"{'🟢' if gs[k] else '🔴'} {TOGGLES[k]}", f"st:{cid}:tg:{k}")
     k = kb([t("protect"), t("link_approval")],
-           [b(f"⚠️ Warn Limit: {gs['warn_limit']}", f"st:{cid}:wl"), b(f"⚡ Action: {gs['action'].title()}", f"st:{cid}:ac")],
-           [t("welcome_on"), t("cleanservice")], [t("sticker_on"), t("sticker_captcha")], [t("reports_on")],
-           [b(f"🎨 Theme: {gs['theme'].title()}", f"st:{cid}:th"), b(f"🔤 Font: {gs['font'].title()}", f"st:{cid}:fn")],
+           [b(f"⚠️ Warn Limit: {gs['warn_limit']}", f"st:{cid}:wl"),
+            b(f"⚡ Action: {gs['action'].title()}", f"st:{cid}:ac")],
+           [t("welcome_on"), t("cleanservice")],
+           [t("sticker_on"), t("sticker_captcha")],
+           [t("reports_on")],
+           [b(f"🎨 Theme: {gs['theme'].title()}", f"st:{cid}:th"),
+            b(f"🔤 Font: {gs['font'].title()}", f"st:{cid}:fn")],
            [b("✖ Close", f"st:{cid}:x")])
     rows = [("💬", "Group", esc(short(title, 30))), ("🛡", "Protection", onoff(gs["protect"])),
-            ("⚠️", "Warns", f"{gs['warn_limit']} → {gs['action'].title()}"), ("🔗", "Link approval", onoff(gs["link_approval"])),
-            ("🎨", "Theme / Font", f"{gs['theme'].title()} / {gs['font'].title()}"), "", "┃ Buttons se settings badlo 👇"]
+            ("⚠️", "Warns", f"{gs['warn_limit']} → {gs['action'].title()}"),
+            ("🔗", "Link approval", onoff(gs["link_approval"])),
+            ("🎨", "Theme / Font", f"{gs['theme'].title()} / {gs['font'].title()}"),
+            "", "┃ Buttons se settings badlo 👇"]
     return card("⚙️", "CONTROL PANEL", rows, gs), k
 
 
 @dp.message(Cmd("settings"))
 async def c_settings(m: Message):
     if is_private(m):
-        return await say(m, "⚙️", "SETTINGS", [("💡", "Info", "Control Panel se apna group chuno.")], kb([b("🎛 Control Panel", "pn:home")]))
+        return await say(m, "⚙️", "SETTINGS", [("💡", "Info", "Control Panel se apna group chuno.")],
+                         kb([b("🎛 Control Panel", "pn:home")]))
     if not is_group(m):
         return
     if not await is_admin(m.chat.id, m.from_user.id):
@@ -1504,36 +1585,39 @@ async def cb_settings(cb: CallbackQuery):
     if act == "x":
         await try_delete(cb.message.chat.id, cb.message.message_id)
         return await cb.answer()
-    if act == "tg" and parts[3] in TOGGLES:
+    if act == "tg" and len(parts) > 3 and parts[3] in TOGGLES:
         await set_gs(cid, **{parts[3]: not gs[parts[3]]})
     elif act == "wl":
         cur = gs["warn_limit"]
-        await set_gs(cid, warn_limit=WARN_CYCLE[(WARN_CYCLE.index(cur) + 1) % len(WARN_CYCLE)] if cur in WARN_CYCLE else 3)
+        await set_gs(cid, warn_limit=WARN_CYCLE[(WARN_CYCLE.index(cur) + 1) % len(WARN_CYCLE)]
+                     if cur in WARN_CYCLE else 3)
     elif act == "ac":
         await set_gs(cid, action=ACTIONS[(ACTIONS.index(gs["action"]) + 1) % 3])
-    elif act == "sth" and parts[3] in THEMES:
+    elif act == "sth" and len(parts) > 3 and parts[3] in THEMES:
         await set_gs(cid, theme=parts[3])
-    elif act == "sfn" and parts[3] in FONT_NAMES:
+    elif act == "sfn" and len(parts) > 3 and parts[3] in FONT_NAMES:
         await set_gs(cid, font=parts[3])
     elif act == "th":
-        theme_rows = [
-            ("👑", "Gold Luxury", "Black + gold premium cards"),
-            ("⚡", "Neon Cyber", "Cyber-style divider and accents"),
-            ("🌑", "Dark Stealth", "Minimal dark security look"),
-        ]
-        preview = [f"┃ {'✅ ' if gs['theme'] == key else ''}{label}: {THEMES[key]}" for key, label in [("gold", "Gold Luxury"), ("neon", "Neon Cyber"), ("dark", "Dark Stealth")]]
-        theme_buttons = [b(("✅ " if gs["theme"] == key else "") + label, f"st:{cid}:sth:{key}") for key, label in [("gold", "👑 Gold"), ("neon", "⚡ Neon"), ("dark", "🌑 Dark")]]
-        await edit(cb.message, card("🎨", "THEME STUDIO", preview + ["", "┃ Theme select karne par preview isi card mein update hoga."], gs),
+        preview = [f"┃ {'✅ ' if gs['theme'] == key else ''}{label}: {THEMES[key]}"
+                   for key, label in [("gold", "Gold Luxury"), ("neon", "Neon Cyber"),
+                                       ("dark", "Dark Stealth")]]
+        theme_buttons = [b(("✅ " if gs["theme"] == key else "") + label, f"st:{cid}:sth:{key}")
+                         for key, label in [("gold", "👑 Gold"), ("neon", "⚡ Neon"), ("dark", "🌑 Dark")]]
+        await edit(cb.message, card("🎨", "THEME STUDIO",
+                                     preview + ["", "┃ Theme select karne par preview isi card mein update hoga."],
+                                     gs),
                    kb(theme_buttons, [b("⬅️ Back", f"st:{cid}:home")]))
         return await cb.answer()
     elif act == "fn":
         btns = [b(("✅ " if gs["font"] == f else "") + f.title(), f"st:{cid}:sfn:{f}") for f in FONT_NAMES]
         sample = [f"┃ {f.title()}: {fancy('GUARDIX SECURITY', f)}" for f in FONT_NAMES if f != "auto"]
-        await edit(cb.message, card("🔤", "FONT STUDIO", sample + ["", "┃ Auto: random supported style per card"], gs),
+        await edit(cb.message, card("🔤", "FONT STUDIO",
+                                     sample + ["", "┃ Auto: random supported style per card"], gs),
                    kb(btns[:3], btns[3:6], btns[6:8], [b("⬅️ Back", f"st:{cid}:home")]))
         return await cb.answer()
     gs = await get_gs(cid)
-    title = cb.message.chat.title if cb.message.chat.type != "private" else (await sdb(db.groups.find_one({"chat_id": cid}), {}) or {}).get("title", "Group")
+    title = (cb.message.chat.title if cb.message.chat.type != "private"
+             else (await sdb(db.groups.find_one({"chat_id": cid}), {}) or {}).get("title", "Group"))
     text, k = settings_view(cid, title, gs)
     await edit(cb.message, text, k)
     await cb.answer()
@@ -1549,61 +1633,40 @@ async def cb_panel(cb: CallbackQuery):
         docs = []
         for d in mems:
             if await is_admin(d["chat_id"], uid):
-                docs.append(await sdb(db.groups.find_one({"chat_id": d["chat_id"]})) or {"chat_id": d["chat_id"]})
+                docs.append(await sdb(db.groups.find_one({"chat_id": d["chat_id"]})) or
+                            {"chat_id": d["chat_id"]})
             if len(docs) >= 10:
                 break
-    btns = [[b(f"⚙️ {short(d.get('title') or d['chat_id'], 28)}", f"st:{d['chat_id']}:home")] for d in docs]
+    btns = [[b(f"⚙️ {short(d.get('title') or d['chat_id'], 28)}", f"st:{d['chat_id']}:home")]
+            for d in docs]
     btns.append([b("➕ Add to Group", url=add_url())])
-    rows = ["┃ Apna group chuno 👇"] if docs else ["┃ Koi group nahi mila.", "┃ Bot ko group me add karke admin banao."]
-    await edit(cb.message, card("🎛", "CONTROL PANEL", rows), Kb(inline_keyboard=btns)) if cb.message.text else \
-        await send(cb.message.chat.id, card("🎛", "CONTROL PANEL", rows), reply_markup=Kb(inline_keyboard=btns))
+    rows = (["┃ Apna group chuno 👇"] if docs
+            else ["┃ Koi group nahi mila.", "┃ Bot ko group me add karke admin banao."])
+    target = card("🎛", "CONTROL PANEL", rows)
+    if cb.message.text:
+        await edit(cb.message, target, Kb(inline_keyboard=btns))
+    else:
+        await send(cb.message.chat.id, target, reply_markup=Kb(inline_keyboard=btns))
     await cb.answer()
-
-
-# ════════════════════════════ GAALI FILTER ════════════════════════════
-LEET = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "8": "b",
-                      "@": "a", "$": "s", "!": "i", "|": "i", "€": "e", "+": "t"})
-
-
-def collapse(s):
-    return re.sub(r"(.)\1+", r"\1", s)
-
-
-BAD_WORDS = """madarchod maderchod behenchod bhenchod behnchod betichod bhosdike bhosdika bhosda bhosdiwala
-chutiya chutiye chutiyapa chut chutmarike gandu gaandu gand gaand lund lauda lavda loda lodu randi raand
-harami haramkhor haramzada kamina kamine kutta kutti kuttiya bhadwa bhadwe bhadva chodu jhatu tatti hijda
-bsdk bkl gandmasti fuck fucker fucking fucked motherfucker shit bullshit bitch asshole bastard dick dickhead
-pussy whore slut cunt nigger nigga faggot retard wanker prick""".split()
-BASE_BAD = {collapse(w) for w in BAD_WORDS}
-
-
-def has_bad(text, extra=()):
-    words = BASE_BAD | set(extra)
-    long_ = [w for w in words if len(w) >= 6]
-    low = text[:2000].lower()
-    for v in (low, low.translate(LEET)):
-        toks = {collapse(t) for t in re.findall(r"[a-z]+", v)}
-        if toks & words:
-            return True
-        comp = collapse(re.sub(r"[^a-z]", "", v))
-        if any(w in comp for w in long_):
-            return True
-    return False
 
 
 # ════════════════════════════ LINK / BOT-LINK DETECTION ════════════════════════════
 LINK_RE = re.compile(r"(?:https?://|www\.|t\.me/|telegram\.me/|telegram\.dog/)\S+|"
-                     r"\b[a-z0-9-]+\.(?:com|net|org|xyz|link|gg|ly|site|online|club|info)\b(?:/\S*)?", re.I)
+                     r"\b[a-z0-9-]+\.(?:com|net|org|xyz|link|gg|ly|site|online|club|info)\b(?:/\S*)?",
+                     re.I)
 BOTLINK_RE = re.compile(r"(?:t\.me/|telegram\.me/|@)([A-Za-z0-9_]{3,}bot)\b", re.I)
 
 
 def find_link(m):
     text = m.text or m.caption or ""
     for e in (m.entities or []) + (m.caption_entities or []):
-        if e.type == "url":
-            return e.extract_from(text)
-        if e.type == "text_link":
-            return e.url
+        try:
+            if e.type == "url":
+                return e.extract_from(text)
+            if e.type == "text_link":
+                return e.url
+        except Exception:
+            continue
     mm = LINK_RE.search(text)
     return mm.group(0) if mm else None
 
@@ -1639,8 +1702,9 @@ async def penalize(m, gs, title, reason, secs=300):
     REPEAT.pop((chat, u.id), None)
     MEDIA.pop((chat, u.id), None)
     if ok:
-        await say(m, "🔇", title, [("👤", "User", mention(u.id, u.full_name)), ("⏳", "Muted", f"{secs // 60} min"),
-                                   ("📝", "Reason", reason)], gs=gs, delete_after=30)
+        await say(m, "🔇", title, [("👤", "User", mention(u.id, u.full_name)),
+                                    ("⏳", "Muted", f"{secs // 60} min"),
+                                    ("📝", "Reason", reason)], gs=gs, delete_after=30)
         await log_ev("automute", f"{u.id} {reason} in {chat}", chat)
 
 
@@ -1657,7 +1721,8 @@ async def is_verified(chat_id, uid):
 
 async def mark_verified(chat_id, uid):
     VERIFIED.set((chat_id, uid), 1)
-    await sdb(db.verified.update_one({"chat_id": chat_id, "user_id": uid}, {"$set": {"ts": utcnow()}}, upsert=True))
+    await sdb(db.verified.update_one({"chat_id": chat_id, "user_id": uid},
+                                      {"$set": {"ts": utcnow()}}, upsert=True))
 
 
 async def create_captcha(chat_id, title, uid, kind):
@@ -1670,8 +1735,9 @@ async def create_captcha(chat_id, title, uid, kind):
     while len(opts) < 4:
         opts.add(max(0, ans + random.choice([-6, -4, -3, -2, -1, 1, 2, 3, 4, 6])))
     opts = random.sample(sorted(opts), 4)
-    doc = {"_id": secrets.token_hex(4), "chat_id": chat_id, "title": short(title or "", 60), "user_id": uid,
-           "kind": kind, "answer": ans, "q": f"{a} {op} {c}", "opts": opts, "attempts": 0, "created": utcnow()}
+    doc = {"_id": secrets.token_hex(4), "chat_id": chat_id, "title": short(title or "", 60),
+           "user_id": uid, "kind": kind, "answer": ans, "q": f"{a} {op} {c}",
+           "opts": opts, "attempts": 0, "created": utcnow()}
     try:
         await db.verif.insert_one(doc)
     except PyMongoError as e:
@@ -1692,8 +1758,9 @@ async def send_captcha(uid, doc):
 async def cb_captcha(cb: CallbackQuery):
     _, nonce, val = cb.data.split(":")
     uid = cb.from_user.id
-    doc = await sdb(db.verif.find_one_and_update({"_id": nonce, "user_id": uid}, {"$inc": {"attempts": 1}},
-                                                 return_document=ReturnDocument.AFTER))
+    doc = await sdb(db.verif.find_one_and_update(
+        {"_id": nonce, "user_id": uid}, {"$inc": {"attempts": 1}},
+        return_document=ReturnDocument.AFTER))
     if not doc:
         await cb.answer("Expired ya tumhare liye nahi hai.", show_alert=True)
         return
@@ -1709,19 +1776,25 @@ async def cb_captcha(cb: CallbackQuery):
                 await bot.approve_chat_join_request(cid, uid)
             except TelegramBadRequest as e:
                 if "ALREADY" not in str(e).upper():
-                    await edit(cb.message, card("⌛", "REQUEST EXPIRED", [("💡", "Info", "Join request ab valid nahi hai.")]))
+                    await edit(cb.message, card("⌛", "REQUEST EXPIRED",
+                                                 [("💡", "Info", "Join request ab valid nahi hai.")]))
                     return await cb.answer()
             except TelegramAPIError as e:
                 log.warning("approve failed: %s", e)
-            await edit(cb.message, card("✅", "VERIFIED", [("💬", "Group", esc(doc["title"])), ("🎉", "Status", "Approved! Welcome 🎊")]))
+            await edit(cb.message, card("✅", "VERIFIED",
+                                         [("💬", "Group", esc(doc["title"])),
+                                          ("🎉", "Status", "Approved! Welcome 🎊")]))
             DM_WELCOMED.set((cid, uid), 1)
             await dm_welcome(cb.from_user, doc["title"])
         else:
-            await edit(cb.message, card("✅", "VERIFIED", [("💬", "Group", esc(doc["title"])), ("🎉", "Status", "Ab tum stickers bhej sakte ho.")]))
+            await edit(cb.message, card("✅", "VERIFIED",
+                                         [("💬", "Group", esc(doc["title"])),
+                                          ("🎉", "Status", "Ab tum stickers bhej sakte ho.")]))
         return await cb.answer("Verified ✅")
     if doc["attempts"] >= 3:
         await sdb(db.verif.delete_one({"_id": nonce}))
-        msg = "Request pending hai, admins decide karenge." if kind == "join" else "Thodi der baad dobara try karo."
+        msg = ("Request pending hai, admins decide karenge." if kind == "join"
+               else "Thodi der baad dobara try karo.")
         await edit(cb.message, card("🚫", "TOO MANY ATTEMPTS", [("💡", "Info", msg)]))
         return await cb.answer("3 attempts khatam", show_alert=True)
     await cb.answer(f"Galat! {3 - doc['attempts']} attempt bache.", show_alert=True)
@@ -1743,7 +1816,16 @@ async def on_join_request(req: ChatJoinRequest):
     if msg:
         await schedule_delete(req.user_chat_id, msg.message_id, 600)
     else:
-        log.info("join-request captcha DM failed for %s", u.id)
+        log.info("join-request captcha DM failed for %s; sending group fallback", u.id)
+        try:
+            g = await send(chat.id,
+                            f"{mention(u.id, u.full_name)} join request pending hai. "
+                            "DM me captcha bheja gaya tha – ab yahan se verify karo:",
+                            reply_markup=kb([b("✅ Verify Karo", url=bot_url("vf_" + doc["_id"]))]))
+            if g:
+                await schedule_delete(chat.id, g.message_id, 600)
+        except TelegramAPIError:
+            pass
 
 
 async def dm_welcome(u, title=None):
@@ -1774,10 +1856,13 @@ async def handle_link(m, gs, link):
         return True
     LINK_CARD_CD.set((chat, u.id), time.time())
     text = m.text or m.caption or ""
-    rows = [("👤", "User", f"{mention(u.id, u.full_name)} (ID: <code>{u.id}</code>)"), ("💬", "Group", esc(short(m.chat.title, 40))),
-            ("📝", "Message", esc(short(text, 120))), ("🔗", "Link", esc(short(link, 100)))]
+    rows = [("👤", "User", f"{mention(u.id, u.full_name)} (ID: <code>{u.id}</code>)"),
+            ("💬", "Group", esc(short(m.chat.title, 40))),
+            ("📝", "Message", esc(short(text, 120))),
+            ("🔗", "Link", esc(short(link, 100)))]
     msg = await send(chat, card("🔗", "LINK APPROVAL REQUEST", rows, gs),
-                     reply_markup=kb([b("✅ Approve", f"la:ok:{chat}:{u.id}"), b("❌ Reject", f"la:no:{chat}:{u.id}")]))
+                     reply_markup=kb([b("✅ Approve", f"la:ok:{chat}:{u.id}"),
+                                       b("❌ Reject", f"la:no:{chat}:{u.id}")]))
     if msg:
         await schedule_delete(chat, msg.message_id, 600)
     return True
@@ -1793,14 +1878,20 @@ async def cb_link(cb: CallbackQuery):
         await try_delete(cb.message.chat.id, cb.message.message_id)
         return await cb.answer("Rejected")
     now = utcnow()
-    await sdb(db.link_approvals.update_one({"chat_id": cid, "user_id": uid}, {"$set": {"created": now, "until": now + timedelta(minutes=10)}}, upsert=True))
+    await sdb(db.link_approvals.update_one({"chat_id": cid, "user_id": uid},
+                                            {"$set": {"created": now, "until": now + timedelta(minutes=10)}},
+                                            upsert=True))
     gs = await get_gs(cid)
-    await edit(cb.message, card("✅", "LINK APPROVED", [("🆔", "User ID", f"<code>{uid}</code>"), ("⏳", "Window", "10 minutes"),
-                                                      ("👮", "By", mention(cb.from_user.id, cb.from_user.full_name))], gs))
+    await edit(cb.message, card("✅", "LINK APPROVED",
+                                 [("🆔", "User ID", f"<code>{uid}</code>"),
+                                  ("⏳", "Window", "10 minutes"),
+                                  ("👮", "By", mention(cb.from_user.id, cb.from_user.full_name))], gs))
     await schedule_delete(cb.message.chat.id, cb.message.message_id, 60)
-    note = card("✅", "LINK APPROVED", [("💬", "Group", esc(short(cb.message.chat.title or "", 40))), ("⏳", "Window", "10 min – ab link bhej sakte ho")], gs)
+    note = card("✅", "LINK APPROVED",
+                [("💬", "Group", esc(short(cb.message.chat.title or "", 40))),
+                 ("⏳", "Window", "10 min – ab link bhej sakte ho")], gs)
     if not await send(uid, note):
-        m2 = await send(cb.message.chat.id, f'{mention(uid, "User")} ' + "tumhara link approve ho gaya (10 min).")
+        m2 = await send(cb.message.chat.id, f'{mention(uid, "User")} tumhara link approve ho gaya (10 min).')
         if m2:
             await schedule_delete(cb.message.chat.id, m2.message_id, 60)
     await cb.answer("Approved")
@@ -1815,14 +1906,17 @@ async def first_msg_dm(m):
     uid = m.from_user.id
     if await sdb(db.users.find_one({"user_id": uid, "blocked": {"$ne": True}}, {"_id": 1})):
         return
-    r = await sdb(db.members.find_one_and_update({"chat_id": m.chat.id, "user_id": uid, "dm_prompted": {"$ne": True}},
-                                                 {"$set": {"dm_prompted": True}}))
+    r = await sdb(db.members.find_one_and_update(
+        {"chat_id": m.chat.id, "user_id": uid, "dm_prompted": {"$ne": True}},
+        {"$set": {"dm_prompted": True}}))
     if not r:
         return
     try:
-        await bot.send_message(uid, card("🛡", "GUARDIX", [("💬", "Group", esc(short(m.chat.title, 40))),
-                                                          "", "┃ Premium security ke liye bot start karo 👇"]),
-                               reply_markup=kb([b("🚀 Start Bot", url=bot_url("start"))]), disable_notification=True)
+        await bot.send_message(uid, card("🛡", "GUARDIX",
+                                          [("💬", "Group", esc(short(m.chat.title, 40))),
+                                           "", "┃ Premium security ke liye bot start karo 👇"]),
+                                reply_markup=kb([b("🚀 Start Bot", url=bot_url("start"))]),
+                                disable_notification=True)
     except TelegramAPIError:
         pass
 
@@ -1848,34 +1942,36 @@ async def protect(m, edited=False):
         return await do_report(m, text.split(None, 1)[1] if len(text.split(None, 1)) > 1 else "")
     if not gs["protect"] or await exempt(chat, u.id):
         return
-    # bot link alert
     if text:
         bm = BOTLINK_RE.search(text)
-        if bm and bm.group(1).lower() != BOT_USERNAME.lower() and time.time() - (BOTLINK_CD.get((chat, u.id)) or 0) > 60:
+        if bm and bm.group(1).lower() != BOT_USERNAME.lower() and \
+                time.time() - (BOTLINK_CD.get((chat, u.id)) or 0) > 60:
             BOTLINK_CD.set((chat, u.id), time.time())
-            spawn(alert(card("🤖", "BOT LINK SHARED", [("👤", "User", mention(u.id, u.full_name)), ("💬", "Group", esc(short(m.chat.title, 40))),
-                                                      ("🔗", "Bot", "@" + esc(bm.group(1)))])))
-    # 1. gaali
+            spawn(alert(card("🤖", "BOT LINK SHARED",
+                              [("👤", "User", mention(u.id, u.full_name)),
+                               ("💬", "Group", esc(short(m.chat.title, 40))),
+                               ("🔗", "Bot", "@" + esc(bm.group(1)))])))
     if text:
         extra = await get_badwords(chat)
         if has_bad(text, extra):
             await try_delete(chat, m.message_id)
             count = await add_warn(chat, u.id, "Abusive language", BOT_ID)
-            acted = await apply_limit(chat, u.id, count, gs)
-            rows = [("👤", "User", mention(u.id, u.full_name)), ("🚫", "Reason", "Gaali / abusive language"),
+            acted = None
+            if count >= gs["warn_limit"]:
+                acted = await apply_limit(chat, u.id, gs)
+            rows = [("👤", "User", mention(u.id, u.full_name)),
+                    ("🚫", "Reason", "Gaali / abusive language"),
                     ("⚠️", "Warns", f"{min(count, gs['warn_limit'])}/{gs['warn_limit']}  {pbar(count, gs['warn_limit'], 6)}")]
             if acted:
                 rows.append(("⚡", "Action", f"<b>{acted}</b>"))
             await say(m, "🚫", "GAALI DETECTED", rows, gs=gs, delete_after=30)
             return
-    # 2. links
     if gs["link_approval"]:
         link = find_link(m)
         if link and await handle_link(m, gs, link):
             return
     if edited:
         return
-    # 3. sticker captcha
     if m.sticker and not gs["sticker_on"]:
         if await is_verified(chat, u.id):
             return
@@ -1885,21 +1981,18 @@ async def protect(m, edited=False):
         return
     now = time.time()
     key = (chat, u.id)
-    # 4. flood
     dq = FLOOD.setdefault(key, deque(maxlen=10))
     while dq and now - dq[0] > 8:
         dq.popleft()
     dq.append(now)
     if len(dq) >= 6:
         return await penalize(m, gs, "FLOOD DETECTED", "6+ messages in 8s")
-    # 5. repeat
     if m.text:
         h = hash(text.strip().lower())
         rq = REPEAT.setdefault(key, deque(maxlen=6))
         rq.append((h, now))
         if sum(1 for x, t in rq if x == h and now - t <= 30) >= 4:
             return await penalize(m, gs, "REPEAT SPAM", "Same message 4x in 30s")
-    # 6. media spam
     if m.sticker or m.photo or m.video or m.forward_origin:
         mq = MEDIA.setdefault(key, deque(maxlen=8))
         while mq and now - mq[0] > 10:
@@ -1912,7 +2005,7 @@ async def protect(m, edited=False):
 async def start_sticker_captcha(m):
     chat, u = m.chat.id, m.from_user
     if await sdb(db.verif.find_one({"chat_id": chat, "user_id": u.id, "kind": "sticker"}, {"_id": 1})):
-        return  # 1 hour cooldown (TTL doc still alive)
+        return
     doc = await create_captcha(chat, m.chat.title, u.id, "sticker")
     if not doc:
         return
@@ -1929,7 +2022,8 @@ async def start_sticker_captcha(m):
 # ════════════════════════════ JOIN / LEAVE / SERVICE ════════════════════════════
 def render_welcome(gs, u, title):
     if gs.get("welcome"):
-        return esc(gs["welcome"]).replace("{name}", mention(u.id, u.full_name)).replace("{group}", esc(title or ""))
+        return esc(gs["welcome"]).replace("{name}", mention(u.id, u.full_name)).replace(
+            "{group}", esc(title or ""))
     return None
 
 
@@ -1946,9 +2040,12 @@ async def raid_check(m, gs, u):
         for uid in set(recent):
             await mute_user(chat, uid, 600)
             await asyncio.sleep(0.05)
-        await say(m, "🚨", "RAID PROTECTION", [("👥", "Joins", f"{len(recent)} in 30s"), ("🔇", "Action", "New members 10 min muted")],
-                  gs=gs, delete_after=300)
-        await alert(card("🚨", "RAID DETECTED", [("💬", "Group", esc(short(m.chat.title, 40))), ("👥", "Joins", len(recent))]))
+        await say(m, "🚨", "RAID PROTECTION",
+                  [("👥", "Joins", f"{len(recent)} in 30s"),
+                   ("🔇", "Action", "New members 10 min muted")], gs=gs, delete_after=300)
+        await alert(card("🚨", "RAID DETECTED",
+                          [("💬", "Group", esc(short(m.chat.title, 40))),
+                           ("👥", "Joins", len(recent))]))
         return True
     return False
 
@@ -1967,8 +2064,10 @@ async def on_join(m: Message):
             if gs["protect"] and adder and adder.id != u.id and not await is_admin(chat.id, adder.id):
                 try:
                     await kick_user(chat.id, u.id)
-                    await say(m, "🤖", "ANTI-BOT", [("🤖", "Bot", f"@{esc(u.username or u.id)}"), ("👤", "Added by", mention(adder.id, adder.full_name)),
-                                                     ("⚡", "Action", "Bot kicked")], gs=gs, delete_after=60)
+                    await say(m, "🤖", "ANTI-BOT",
+                              [("🤖", "Bot", f"@{esc(u.username or u.id)}"),
+                               ("👤", "Added by", mention(adder.id, adder.full_name)),
+                               ("⚡", "Action", "Bot kicked")], gs=gs, delete_after=60)
                 except TelegramAPIError as e:
                     log.info("antibot failed: %s", e)
             continue
@@ -1976,7 +2075,9 @@ async def on_join(m: Message):
         if u.id in GBANS:
             try:
                 await bot.ban_chat_member(chat.id, u.id)
-                await say(m, "🚫", "GBAN HIT", [("👤", "User", mention(u.id, u.full_name)), ("⚡", "Action", "Auto-banned (global ban)")], gs=gs, delete_after=60)
+                await say(m, "🚫", "GBAN HIT",
+                          [("👤", "User", mention(u.id, u.full_name)),
+                           ("⚡", "Action", "Auto-banned (global ban)")], gs=gs, delete_after=60)
             except TelegramAPIError:
                 pass
             continue
@@ -1989,11 +2090,13 @@ async def on_join(m: Message):
         if not dm_ok:
             dm_ok = await dm_welcome(u, chat.title)
         custom = render_welcome(gs, u, chat.title)
-        rows = [("👤", "User", mention(u.id, u.full_name)), ("🆔", "ID", f"<code>{u.id}</code>"), ("💬", "Group", esc(short(chat.title, 40)))]
+        rows = [("👤", "User", mention(u.id, u.full_name)), ("🆔", "ID", f"<code>{u.id}</code>"),
+                ("💬", "Group", esc(short(chat.title, 40)))]
         btns = [b("📜 Rules", f"wl:r:{chat.id}"), b("💎 VIP Lounge", f"wl:v:{chat.id}")]
         rows_kb = [btns] if dm_ok else [btns, [b("🚀 Start Bot", url=bot_url("start"))]]
         photo = await profile_photo(u.id)
-        msg = await send_card(chat.id, photo, card("🎉", "WELCOME", rows, gs, custom), Kb(inline_keyboard=rows_kb))
+        msg = await send_card(chat.id, photo, card("🎉", "WELCOME", rows, gs, custom),
+                               Kb(inline_keyboard=rows_kb))
         if msg:
             await schedule_delete(chat.id, msg.message_id, 86400)
 
@@ -2007,19 +2110,22 @@ async def cb_welcome(cb: CallbackQuery):
         txt = gs.get("rules") or "Abhi rules set nahi hain."
         return await cb.answer(short("📜 " + txt, 195), show_alert=True)
     docs = await sdb(db.vips.find({"chat_id": cid}).to_list(20), [])
-    txt = "💎 " + (", ".join(short(d.get("name", "VIP"), 14) for d in docs) if docs else "Abhi koi VIP nahi.")
+    txt = "💎 " + (", ".join(short(d.get("name", "VIP"), 14) for d in docs)
+                   if docs else "Abhi koi VIP nahi.")
     await cb.answer(short(txt, 195), show_alert=True)
 
 
-SERVICE = (F.left_chat_member | F.new_chat_title | F.new_chat_photo | F.delete_chat_photo | F.pinned_message
-           | F.group_chat_created | F.video_chat_started | F.video_chat_ended | F.video_chat_scheduled
-           | F.video_chat_participants_invited | F.message_auto_delete_timer_changed)
+SERVICE = (F.left_chat_member | F.new_chat_title | F.new_chat_photo | F.delete_chat_photo |
+           F.pinned_message | F.group_chat_created | F.video_chat_started | F.video_chat_ended |
+           F.video_chat_scheduled | F.video_chat_participants_invited |
+           F.message_auto_delete_timer_changed)
 
 
 @dp.message(SERVICE)
 async def on_service(m: Message):
     if m.left_chat_member and not m.left_chat_member.is_bot:
-        await sdb(db.members.delete_one({"chat_id": m.chat.id, "user_id": m.left_chat_member.id}))
+        await sdb(db.members.delete_one({"chat_id": m.chat.id,
+                                          "user_id": m.left_chat_member.id}))
         MEMBER_NAMES.pop((m.chat.id, m.left_chat_member.id))
     gs = await get_gs(m.chat.id)
     if gs["cleanservice"]:
@@ -2041,25 +2147,37 @@ async def on_my_chat_member(ev: ChatMemberUpdated):
         return
     who = mention(ev.from_user.id, ev.from_user.full_name)
     if new in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR) and old in gone:
-        await sdb(db.groups.update_one({"chat_id": chat.id}, {"$set": {"title": short(chat.title or "", 80), "active": True, "added_by": ev.from_user.id, "added_at": utcnow()}}, upsert=True))
+        await sdb(db.groups.update_one(
+            {"chat_id": chat.id},
+            {"$set": {"title": short(chat.title or "", 80), "active": True,
+                      "added_by": ev.from_user.id, "added_at": utcnow()}}, upsert=True))
         GS_CACHE.pop(chat.id)
         GROUP_SEEN.set(chat.id, 1)
-        await alert(card("➕", "BOT ADDED", [("💬", "Group", esc(short(chat.title, 40))), ("🆔", "ID", f"<code>{chat.id}</code>"), ("👤", "By", who)]))
+        await alert(card("➕", "BOT ADDED",
+                          [("💬", "Group", esc(short(chat.title, 40))),
+                           ("🆔", "ID", f"<code>{chat.id}</code>"),
+                           ("👤", "By", who)]))
         await log_ev("bot-added", f"{chat.id} {chat.title}", chat.id)
-        msg = await send(chat.id, card("🛡", "GUARDIX ACTIVE", [("✅", "Status", "Protection ON"), "",
-                                                              "┃ Mujhe admin banao (Delete + Ban rights)", "┃ /settings se panel kholo"]),
+        msg = await send(chat.id, card("🛡", "GUARDIX ACTIVE",
+                                        [("✅", "Status", "Protection ON"), "",
+                                         "┃ Mujhe admin banao (Delete + Ban rights)",
+                                         "┃ /settings se panel kholo"]),
                          reply_markup=kb([b("🚀 Open Bot", url=bot_url())]))
         if msg:
             await schedule_delete(chat.id, msg.message_id, 3600)
     elif new in gone:
         await sdb(db.groups.update_one({"chat_id": chat.id}, {"$set": {"active": False}}))
-        await alert(card("➖", "BOT REMOVED", [("💬", "Group", esc(short(chat.title, 40))), ("🆔", "ID", f"<code>{chat.id}</code>"), ("👤", "By", who)]))
+        await alert(card("➖", "BOT REMOVED",
+                          [("💬", "Group", esc(short(chat.title, 40))),
+                           ("🆔", "ID", f"<code>{chat.id}</code>"),
+                           ("👤", "By", who)]))
         await log_ev("bot-removed", f"{chat.id} {chat.title}", chat.id)
 
 
-# ════════════════════════════ AUTO WATCHERS (registered last for groups) ════════════════════════════
+# ════════════════════════════ AUTO WATCHERS (registered last) ════════════════════════════
 def register_watchers():
-    @dp.message(F.chat.type.in_({"group", "supergroup"}))
+    @dp.message(F.chat.type.in_({"group", "supergroup"}),
+                ~F.text.startswith("/"), ~F.text.startswith("."), ~F.text.startswith("!"))
     async def watch(m: Message):
         await protect(m)
 
@@ -2094,7 +2212,8 @@ async def c_addsudo(m: Message, args: str):
     if not uid:
         return await say(m, "⚠️", "USAGE", [("💡", "Use", "/addsudo <user_id>")])
     SUDO.add(uid)
-    await sdb(db.sudolist.update_one({"user_id": uid}, {"$set": {"by": m.from_user.id, "ts": utcnow()}}, upsert=True))
+    await sdb(db.sudolist.update_one({"user_id": uid},
+                                      {"$set": {"by": m.from_user.id, "ts": utcnow()}}, upsert=True))
     await say(m, "⚡", "SUDO ADDED", [("🆔", "ID", f"<code>{uid}</code>")])
     await log_ev("addsudo", str(uid))
 
@@ -2116,7 +2235,8 @@ async def c_delsudo(m: Message, args: str):
 async def c_sudolist(m: Message):
     if not sudo_dm(m):
         return
-    lines = [f"┃ 👑 <code>{OWNER_ID}</code> (Owner)"] + [f"┃ ⚡ {mention(u, str(u))}" for u in sorted(SUDO - {OWNER_ID})]
+    lines = [f"┃ 👑 <code>{OWNER_ID}</code> (Owner)"] + \
+            [f"┃ ⚡ {mention(u, str(u))}" for u in sorted(SUDO - {OWNER_ID})]
     await say(m, "⚡", "SUDO LIST", lines)
 
 
@@ -2128,8 +2248,10 @@ async def c_gban(m: Message, args: str):
     if not uid or is_sudo(uid):
         return await say(m, "⚠️", "USAGE", [("💡", "Use", "/gban <user_id> (owner/sudo ban nahi hote)")])
     GBANS.add(uid)
-    await sdb(db.gbans.update_one({"user_id": uid}, {"$set": {"by": m.from_user.id, "ts": utcnow()}}, upsert=True))
-    await say(m, "🚫", "GLOBAL BAN", [("🆔", "ID", f"<code>{uid}</code>"), ("⚡", "Effect", "Join/message par auto-ban")])
+    await sdb(db.gbans.update_one({"user_id": uid},
+                                    {"$set": {"by": m.from_user.id, "ts": utcnow()}}, upsert=True))
+    await say(m, "🚫", "GLOBAL BAN",
+              [("🆔", "ID", f"<code>{uid}</code>"), ("⚡", "Effect", "Join/message par auto-ban")])
     await log_ev("gban", str(uid))
 
 
@@ -2165,15 +2287,20 @@ async def c_leavechat(m: Message, args: str):
 @dp.message(Cmd("uptime"))
 async def c_uptime(m: Message):
     if sudo_dm(m):
-        await say(m, "⏱", "UPTIME", [("🟢", "Running", fmt_td(time.time() - START_TS)), ("🕒", "Now", fmt_dt(utcnow()))])
+        await say(m, "⏱", "UPTIME",
+                  [("🟢", "Running", fmt_td(time.time() - START_TS)),
+                   ("🕒", "Now", fmt_dt(utcnow()))])
 
 
 @dp.message(Cmd("logs"))
 async def c_logs(m: Message):
     if not sudo_dm(m):
         return
-    docs = await sdb(db.events.find({"type": {"$ne": "sched_del"}}).sort("created", -1).limit(15).to_list(15), [])
-    lines = [f"┃ <code>{local(d['created']).strftime('%d/%m %H:%M')}</code> {esc(d['type'])}: {esc(short(d.get('text', ''), 60))}" for d in docs] or ["┃ Koi log nahi."]
+    docs = await sdb(db.events.find({"type": {"$ne": "sched_del"}})
+                     .sort("created", -1).limit(15).to_list(15), [])
+    lines = [f"┃ <code>{local(d['created']).strftime('%d/%m %H:%M')}</code> "
+             f"{esc(d['type'])}: {esc(short(d.get('text', ''), 60))}"
+             for d in docs] or ["┃ Koi log nahi."]
     await say(m, "📜", "RECENT EVENTS", lines)
 
 
@@ -2205,17 +2332,22 @@ async def bc_start(m, args, kind):
         return
     r = m.reply_to_message
     if not args and not r:
-        return await say(m, "⚠️", "USAGE", [("💡", "Use", f"/{kind} <message> ya kisi message par reply karo")])
+        return await say(m, "⚠️", "USAGE",
+                         [("💡", "Use", f"/{kind} <message> ya kisi message par reply karo")])
     src = ("copy", r.chat.id, r.message_id) if r else ("text", args)
     bid = secrets.token_hex(3)
     PENDING_BC.set(bid, {"kind": kind, "src": src, "uid": m.from_user.id})
-    ng = await sdb(db.groups.count_documents({"active": {"$ne": False}}), 0) if kind in ("broadcast", "gcast") else 0
-    nu = await sdb(db.users.count_documents({"blocked": {"$ne": True}}), 0) if kind in ("broadcast", "dmpromo") else 0
+    ng = (await sdb(db.groups.count_documents({"active": {"$ne": False}}), 0)
+          if kind in ("broadcast", "gcast") else 0)
+    nu = (await sdb(db.users.count_documents({"blocked": {"$ne": True}}), 0)
+          if kind in ("broadcast", "dmpromo") else 0)
     try:
-        await deliver(m.chat.id, src)  # preview
+        await deliver(m.chat.id, src)
     except Exception:
         pass
-    await say(m, "📣", "CONFIRM " + kind.upper(), [("👥", "Groups", ng), ("👤", "Users", nu), "", "┃ Upar preview hai. Bhejun?"],
+    await say(m, "📣", "CONFIRM " + kind.upper(),
+              [("👥", "Groups", ng), ("👤", "Users", nu), "",
+               "┃ Upar preview hai. Bhejun?"],
               kb([b("✅ Send", f"bc:{bid}:go"), b("❌ Cancel", f"bc:{bid}:no")]))
 
 
@@ -2247,7 +2379,8 @@ async def cb_bc(cb: CallbackQuery):
         return await cb.answer()
     if BC_LOCK.locked():
         return await cb.answer("Ek broadcast already chal raha hai.", show_alert=True)
-    await edit(cb.message, card("🚀", "SENDING...", [("⏳", "Status", "Chal raha hai. Report aayega. (/stop se ruk sakta hai)")]))
+    await edit(cb.message, card("🚀", "SENDING...",
+                                 [("⏳", "Status", "Chal raha hai. Report aayega. (/stop se ruk sakta hai)")]))
     await cb.answer("Started")
     spawn(run_broadcast(cb.message.chat.id, job))
 
@@ -2278,8 +2411,10 @@ async def run_broadcast(report_to, job):
             if i % 25 == 0:
                 await asyncio.sleep(1.0)
         await send(report_to, card("📊", "BROADCAST REPORT" + (" (STOPPED)" if BC_STOP["flag"] else ""),
-                                   [("🎯", "Targets", len(targets)), ("✅", "Delivered", stat["ok"]),
-                                    ("🚫", "Blocked/removed", stat["blocked"]), ("❌", "Failed", stat["fail"])]))
+                                    [("🎯", "Targets", len(targets)),
+                                     ("✅", "Delivered", stat["ok"]),
+                                     ("🚫", "Blocked/removed", stat["blocked"]),
+                                     ("❌", "Failed", stat["fail"])]))
         await log_ev("broadcast", f"{kind}: {stat}")
 
 
@@ -2305,14 +2440,16 @@ async def c_callpm(m: Message, args: str):
     day = sum(1 for t in CALLPM_LOG if now - t < 86400)
     allowed = max(0, min(count, 100 - hour, 500 - day))
     if allowed == 0:
-        return await say(m, "⏳", "RATE LIMIT", [("💡", "Info", "Limit: 100/hour, 500/day. Baad me try karo.")])
+        return await say(m, "⏳", "RATE LIMIT",
+                         [("💡", "Info", "Limit: 100/hour, 500/day. Baad me try karo.")])
     if CALLPM_LOCK.locked():
         return await say(m, "⏳", "BUSY", [("💡", "Info", "Ek /callpm already chal raha hai.")])
     async with CALLPM_LOCK:
         if is_group(m):
             mem = await sdb(db.members.find({"chat_id": m.chat.id}, {"user_id": 1}).to_list(5000), [])
             ids = [d["user_id"] for d in mem]
-            started = await sdb(db.users.find({"user_id": {"$in": ids}, "blocked": {"$ne": True}}, {"user_id": 1}).to_list(5000), [])
+            started = await sdb(db.users.find({"user_id": {"$in": ids}, "blocked": {"$ne": True}},
+                                                {"user_id": 1}).to_list(5000), [])
             targets = [d["user_id"] for d in started]
         else:
             docs = await sdb(db.users.find({"blocked": {"$ne": True}}, {"user_id": 1}).to_list(5000), [])
@@ -2337,7 +2474,8 @@ async def c_callpm(m: Message, args: str):
             await asyncio.sleep(0.06)
             if i % 25 == 0:
                 await asyncio.sleep(1.0)
-    await say(m, "📞", "CALLPM DONE", [("🎯", "Targets", len(targets)), ("✅", "Sent", ok), ("❌", "Failed", bad)])
+    await say(m, "📞", "CALLPM DONE", [("🎯", "Targets", len(targets)),
+                                         ("✅", "Sent", ok), ("❌", "Failed", bad)])
 
 
 # ════════════════════════════ ZOMBIES ════════════════════════════
@@ -2351,17 +2489,22 @@ async def c_zombies(m: Message, args: str):
     uid = m.from_user.id
     mem = await get_member(m.chat.id, uid, fresh=True)
     if not (uid == OWNER_ID or (mem and mem.status == ChatMemberStatus.CREATOR)):
-        return await say(m, "🚫", "OWNER ONLY", [("🔐", "Need", "Sirf group owner ye chala sakta hai.")], delete_after=10)
+        return await say(m, "🚫", "OWNER ONLY",
+                         [("🔐", "Need", "Sirf group owner ye chala sakta hai.")], delete_after=10)
     if m.chat.id in ZOMBIE_RUN:
-        return await say(m, "⏳", "BUSY", [("💡", "Info", "Scan already chal raha hai. /stop se roko.")], delete_after=10)
+        return await say(m, "⏳", "BUSY",
+                         [("💡", "Info", "Scan already chal raha hai. /stop se roko.")], delete_after=10)
     lvl = int(args.split()[0]) if args.split() and args.split()[0] in ("1", "2", "3", "4") else 1
     limit = lvl * 100
-    docs = await sdb(db.members.find({"chat_id": m.chat.id}, {"user_id": 1}).sort("last", -1).limit(limit).to_list(limit), [])
+    docs = await sdb(db.members.find({"chat_id": m.chat.id}, {"user_id": 1})
+                     .sort("last", -1).limit(limit).to_list(limit), [])
     ZOMBIE_RUN[m.chat.id] = {"stop": False}
     gs = await get_gs(m.chat.id)
     total, found, kicked = len(docs), 0, 0
-    prog = await say(m, "🧟", "ZOMBIE SCAN", [("🎯", "Scanning", f"{total} tracked members"), ("⛔", "Stop", "/stop")], gs=gs,
-                     kb_=kb([b("⛔ Stop", f"zs:{m.chat.id}")]))
+    prog = await say(m, "🧟", "ZOMBIE SCAN",
+                     [("🎯", "Scanning", f"{total} tracked members"), ("⛔", "Stop", "/stop")],
+                     gs=gs, kb_=kb([b("⛔ Stop", f"zs:{m.chat.id}")]))
+    stopped = False
     try:
         for i, d in enumerate(docs, 1):
             if ZOMBIE_RUN[m.chat.id]["stop"]:
@@ -2369,26 +2512,31 @@ async def c_zombies(m: Message, args: str):
             try:
                 cm = await bot.get_chat_member(m.chat.id, d["user_id"])
                 if cm.status in (ChatMemberStatus.LEFT, ChatMemberStatus.KICKED):
-                    await sdb(db.members.delete_one({"chat_id": m.chat.id, "user_id": d["user_id"]}))
+                    await sdb(db.members.delete_one({"chat_id": m.chat.id,
+                                                      "user_id": d["user_id"]}))
                 elif cm.user.first_name == "Deleted Account" and cm.status == ChatMemberStatus.MEMBER:
                     found += 1
                     await kick_user(m.chat.id, d["user_id"])
                     kicked += 1
-                    await sdb(db.members.delete_one({"chat_id": m.chat.id, "user_id": d["user_id"]}))
+                    await sdb(db.members.delete_one({"chat_id": m.chat.id,
+                                                      "user_id": d["user_id"]}))
             except TelegramRetryAfter as e:
                 await asyncio.sleep(e.retry_after + 1)
             except TelegramAPIError:
                 pass
             await asyncio.sleep(0.05)
             if prog and i % 25 == 0:
-                await edit(prog, card("🧟", "ZOMBIE SCAN", [("📊", "Progress", f"{pbar(i, total)} {i}/{total}"), ("🧟", "Found", found),
-                                                           ("👢", "Kicked", kicked), ("⛔", "Stop", "/stop")], gs),
+                await edit(prog, card("🧟", "ZOMBIE SCAN",
+                                       [("📊", "Progress", f"{pbar(i, total)} {i}/{total}"),
+                                        ("🧟", "Found", found), ("👢", "Kicked", kicked),
+                                        ("⛔", "Stop", "/stop")], gs),
                            kb([b("⛔ Stop", f"zs:{m.chat.id}")]))
         stopped = ZOMBIE_RUN[m.chat.id]["stop"]
     finally:
         ZOMBIE_RUN.pop(m.chat.id, None)
     final = card("🧟", "ZOMBIE SCAN " + ("STOPPED" if stopped else "DONE"),
-                 [("🎯", "Scanned", total), ("🧟", "Found", found), ("👢", "Kicked", kicked),
+                 [("🎯", "Scanned", total), ("🧟", "Found", found),
+                  ("👢", "Kicked", kicked),
                   ("💡", "Note", "Sirf tracked members scan hote hain.")], gs)
     if prog:
         await edit(prog, final)
@@ -2438,8 +2586,9 @@ async def c_addevent(m: Message, args: str):
     if not text and not fid:
         return await say(m, "⚠️", "USAGE", [("💡", "Use", "Photo/text par reply karke /addevent")])
     eid = await next_event_id()
-    await sdb(db.bot_events.insert_one({"event_id": eid, "type": typ, "file_id": fid, "text": text, "created_by": m.from_user.id,
-                                        "created_at": utcnow(), "active": True}))
+    await sdb(db.bot_events.insert_one(
+        {"event_id": eid, "type": typ, "file_id": fid, "text": text,
+         "created_by": m.from_user.id, "created_at": utcnow(), "active": True}))
     await say(m, "🎪", "EVENT CREATED", [("🆔", "Event ID", eid), ("🎨", "Type", typ)])
 
 
@@ -2450,7 +2599,9 @@ async def c_events(m: Message):
     docs = await sdb(db.bot_events.find({"active": True}).sort("event_id", 1).to_list(50), [])
     if not docs:
         return await say(m, "😴", "EVENTS", ["😴 Koi event nahi hai abhi."])
-    await say(m, "🎪", f"EVENTS ({len(docs)})", [f"┃ <b>#{d['event_id']}</b> · {d['type']} · {esc(short(d.get('text') or '—', 40))}" for d in docs])
+    await say(m, "🎪", f"EVENTS ({len(docs)})",
+              [f"┃ <b>#{d['event_id']}</b> · {d['type']} · {esc(short(d.get('text') or '—', 40))}"
+               for d in docs])
 
 
 async def show_event(chat_id, d):
@@ -2480,7 +2631,8 @@ async def c_delevent(m: Message, args: str):
     if not args.strip().isdigit():
         return await say(m, "⚠️", "USAGE", [("💡", "Use", "/delevent <id>")])
     r = await sdb(db.bot_events.delete_one({"event_id": int(args.strip())}))
-    await say(m, "🗑", "EVENT DELETED" if r and r.deleted_count else "NOT FOUND", [("🆔", "Event ID", args.strip())])
+    await say(m, "🗑", "EVENT DELETED" if r and r.deleted_count else "NOT FOUND",
+              [("🆔", "Event ID", args.strip())])
 
 
 @dp.message(Cmd("clearevents"))
@@ -2519,7 +2671,8 @@ async def sweeper():
     while True:
         await asyncio.sleep(20)
         try:
-            docs = await db.events.find({"type": "sched_del", "due": {"$lte": utcnow()}}).limit(100).to_list(100)
+            docs = await db.events.find({"type": "sched_del",
+                                          "due": {"$lte": utcnow()}}).limit(100).to_list(100)
             for d in docs:
                 await try_delete(d["chat_id"], d["msg_id"])
                 await asyncio.sleep(0.05)
@@ -2549,11 +2702,16 @@ async def reporter():
             if key == last:
                 continue
             last = key
-            since = utcnow() - timedelta(hours=24) if now.hour == 0 else now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
-            docs = await db.groups.find({"active": {"$ne": False}, "reports_on": {"$ne": False}}, {"chat_id": 1}).to_list(100000)
+            if now.hour == 0:
+                since = utcnow() - timedelta(hours=24)
+            else:
+                since = now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+            docs = await db.groups.find({"active": {"$ne": False}, "reports_on": {"$ne": False}},
+                                         {"chat_id": 1}).to_list(100000)
             for d in docs:
                 cid = d["chat_id"]
-                r = await db.groups.update_one({"chat_id": cid, "rep_slot": {"$ne": key}}, {"$set": {"rep_slot": key}})
+                r = await db.groups.update_one({"chat_id": cid, "rep_slot": {"$ne": key}},
+                                                {"$set": {"rep_slot": key}})
                 if r.modified_count != 1:
                     continue
                 total, active = await chat_totals(cid, since)
@@ -2561,8 +2719,10 @@ async def reporter():
                     continue
                 top = await top_users(cid, since, 3)
                 gs = await get_gs(cid)
-                rows = [("🕒", "Time", now.strftime("%I:%M %p")), ("💬", "Messages", total), ("👥", "Active users", active), ""] + top_rows(top)
-                await send(cid, card("📊", "6-HOUR REPORT", rows, gs), reply_markup=kb([b("🏆 Full Leaderboard", f"lb:{cid}:0")]))
+                rows = [("🕒", "Time", now.strftime("%I:%M %p")),
+                        ("💬", "Messages", total), ("👥", "Active users", active), ""] + top_rows(top)
+                await send(cid, card("📊", "6-HOUR REPORT", rows, gs),
+                           reply_markup=kb([b("🏆 Full Leaderboard", f"lb:{cid}:0")]))
                 await asyncio.sleep(0.1)
         except PyMongoError as e:
             log.warning("reporter db error: %s", e)
@@ -2577,16 +2737,23 @@ async def on_error(event):
     return True
 
 
-BOT_COMMANDS = [("start", "VIP lounge"), ("help", "Help menu"), ("id", "Get IDs"), ("me", "My profile"), ("info", "User profile"),
-                ("rules", "Group rules"), ("admins", "Admin list"), ("viplist", "VIP members"), ("report", "Report to admins"),
-                ("kickme", "Leave group"), ("top", "Today's top 3"), ("stats", "Today's stats"), ("ban", "Ban user"),
-                ("unban", "Unban user"), ("kick", "Kick user"), ("mute", "Mute user"), ("unmute", "Unmute user"),
-                ("warn", "Warn user"), ("warns", "Show warns"), ("resetwarns", "Reset warns"), ("del", "Delete message"),
-                ("purge", "Purge messages"), ("pin", "Pin message"), ("unpin", "Unpin"), ("lock", "Lock group"),
-                ("unlock", "Unlock group"), ("promote", "Promote admin"), ("demote", "Demote admin"),
-                ("protect", "Protection on/off"), ("addbadword", "Add bad words"), ("delbadword", "Remove bad word"),
-                ("setwelcome", "Set welcome"), ("setrules", "Set rules"), ("settings", "Control panel"),
-                ("announce", "Pinned announcement"), ("addvip", "Add VIP"), ("delvip", "Remove VIP"), ("zombies", "Kick deleted accounts")]
+BOT_COMMANDS = [("start", "VIP lounge"), ("help", "Help menu"), ("id", "Get IDs"),
+                ("me", "My profile"), ("info", "User profile"), ("rules", "Group rules"),
+                ("admins", "Admin list"), ("viplist", "VIP members"),
+                ("report", "Report to admins"), ("kickme", "Leave group"),
+                ("top", "Today's top 3"), ("stats", "Today's stats"),
+                ("ban", "Ban user"), ("unban", "Unban user"), ("kick", "Kick user"),
+                ("mute", "Mute user"), ("unmute", "Unmute user"), ("warn", "Warn user"),
+                ("warns", "Show warns"), ("resetwarns", "Reset warns"),
+                ("del", "Delete message"), ("purge", "Purge messages"),
+                ("pin", "Pin message"), ("unpin", "Unpin"),
+                ("lock", "Lock group"), ("unlock", "Unlock group"),
+                ("promote", "Promote admin"), ("demote", "Demote admin"),
+                ("protect", "Protection on/off"), ("addbadword", "Add bad words"),
+                ("delbadword", "Remove bad word"), ("setwelcome", "Set welcome"),
+                ("setrules", "Set rules"), ("settings", "Control panel"),
+                ("announce", "Pinned announcement"), ("addvip", "Add VIP"),
+                ("delvip", "Remove VIP"), ("zombies", "Kick deleted accounts")]
 
 
 async def main():
